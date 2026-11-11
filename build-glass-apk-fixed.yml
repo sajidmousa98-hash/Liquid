@@ -1,0 +1,80 @@
+name: Build Glass Center APK
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Extract project and check files
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo 'Repository files:'
+          ls -lah
+          ZIP="$(find . -maxdepth 2 -type f -iname 'GlassCenterLiquid*.zip' -print -quit)"
+          if [ -z "$ZIP" ]; then
+            echo '::error::No GlassCenterLiquid source ZIP found. Upload the source ZIP to the repository root.'
+            exit 1
+          fi
+          echo "Extracting $ZIP"
+          unzip -q "$ZIP" -d project
+          if [ ! -f project/GlassCenterLiquid_v02/app/build.gradle ]; then
+            echo '::error::Expected project/GlassCenterLiquid_v02/app/build.gradle is missing.'
+            find project -maxdepth 4 -type f | head -60
+            exit 1
+          fi
+
+      - name: Fix Canvas rounded-clip compile error
+        shell: bash
+        run: |
+          python3 - <<'PY'
+          from pathlib import Path
+          p = Path('project/GlassCenterLiquid_v02/app/src/main/java/dev/local/glasscenter/GlassSlider.java')
+          source = p.read_text(encoding='utf-8')
+          old = 'c.clipRoundRect(0,0,w,h,r,r);'
+          new = '''android.graphics.Path clip = new android.graphics.Path();
+                  clip.addRoundRect(0,0,w,h,r,r,android.graphics.Path.Direction.CW);
+                  c.clipPath(clip);'''
+          if old in source:
+              p.write_text(source.replace(old, new), encoding='utf-8')
+              print('Fixed invalid Canvas.clipRoundRect call.')
+          else:
+              print('No Canvas.clipRoundRect call present; patch not needed.')
+          PY
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Set up Android SDK
+        uses: android-actions/setup-android@v3
+
+      - name: Install Android SDK 35
+        run: sdkmanager 'platforms;android-35' 'build-tools;35.0.0'
+
+      - name: Set up Gradle 8.9
+        uses: gradle/actions/setup-gradle@v4
+        with:
+          gradle-version: '8.9'
+
+      - name: Build debug APK
+        working-directory: project/GlassCenterLiquid_v02
+        run: gradle --no-daemon --stacktrace :app:assembleDebug
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: GlassCenterLiquid-Debug-APK
+          path: project/GlassCenterLiquid_v02/app/build/outputs/apk/debug/app-debug.apk
+          if-no-files-found: error
